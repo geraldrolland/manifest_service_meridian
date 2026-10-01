@@ -3,7 +3,7 @@
 import os
 from unittest.mock import patch
 
-from app.utils import build_object_url, resolve_object_key, cleanup_manifest
+from app.utils import build_object_url, resolve_object_key, cleanup_local_manifest_dir
 
 
 class TestBuildObjectUrl:
@@ -110,13 +110,13 @@ class TestResolveObjectKey:
         assert result == "vid1/seg_a1b2c3d4.mpd"
 
 
-class TestCleanupManifest:
-    """Tests for cleanup_manifest."""
+class TestCleanupLocalManifestDir:
+    """Tests for cleanup_local_manifest_dir."""
 
     @patch("app.utils.shutil.rmtree")
     @patch("app.utils.os.path.isdir", return_value=True)
     def test_removes_existing_directory(self, mock_isdir, mock_rmtree):
-        cleanup_manifest("vid1")
+        cleanup_local_manifest_dir("vid1")
         expected = os.path.join("/tmp/manifest", "vid1")
         mock_isdir.assert_called_once_with(expected)
         mock_rmtree.assert_called_once_with(expected)
@@ -124,7 +124,7 @@ class TestCleanupManifest:
     @patch("app.utils.shutil.rmtree")
     @patch("app.utils.os.path.isdir", return_value=False)
     def test_missing_directory_is_noop(self, mock_isdir, mock_rmtree):
-        cleanup_manifest("missing-video")
+        cleanup_local_manifest_dir("missing-video")
         expected = os.path.join("/tmp/manifest", "missing-video")
         mock_isdir.assert_called_once_with(expected)
         mock_rmtree.assert_not_called()

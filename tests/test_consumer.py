@@ -108,6 +108,7 @@ class TestConsumeMessages:
         assert added_outbox.payload["thumbnail_url"] == (
             "http://minio:9000/vidthumbnails/vid1/thumb.jpg"
         )
+        assert added_outbox.manifest_id == "manifest:evt1"
         session.commit.assert_awaited_once()
         session.close.assert_awaited_once()
         consumer.commit.assert_awaited()
@@ -169,3 +170,48 @@ class TestConsumeMessages:
         _run(consumer)
         consumer.stop.assert_awaited_once()
         consumer.commit.assert_not_awaited()
+
+
+class TestVideoDeletedDispatch:
+    """video.deleted topic: cleanup only — no ManifestTask/Outbox rows."""
+
+    def test_cleans_up_and_commits_offset(self):
+        msg = _FakeMsg(
+            json.dumps({"video_id": "vid1"}).encode(), topic="video.deleted"
+        )
+        consumer = _FakeConsumer([msg])
+        with patch("app.consumer.async_session_factory") as mock_factory, \
+             patch("app.consumer._handle_video_deleted") as mock_handle:
+            _run(consumer)
+
+        mock_handle.assert_called_once_with("vid1")
+        mock_factory.assert_not_called()
+        consumer.commit.assert_awaited()
+        consumer.stop.assert_awaited()
+
+    def test_missing_video_id_skips_handler_but_commits(self):
+        msg = _FakeMsg(
+            json.dumps({"video_id": None}).encode(), topic="video.deleted"
+        )
+        consumer = _FakeConsumer([msg])
+        with patch("app.consumer._handle_video_deleted") as mock_handle:
+            _run(consumer)
+
+        mock_handle.assert_not_called()
+        consumer.commit.assert_awaited()
+        consumer.stop.assert_awaited()
+
+    def test_handler_error_sleeps_without_kafka_commit(self):
+        msg = _FakeMsg(
+            json.dumps({"video_id": "vid1"}).encode(), topic="video.deleted"
+        )
+        consumer = _FakeConsumer([msg])
+        with patch(
+            "app.consumer._handle_video_deleted",
+            side_effect=Exception("minio down"),
+        ), patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            _run(consumer)
+
+        mock_sleep.assert_awaited_with(1)
+        consumer.commit.assert_not_awaited()
+        consumer.stop.assert_awaited()

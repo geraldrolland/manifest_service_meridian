@@ -23,6 +23,24 @@ sys.modules["kafka.errors"] = _kafka_errors_mock
 
 from app.models.manifest_task import ManifestTask, ManifestStatus
 from app.models.outbox import Outbox, OutboxStatus
+from tests.helpers import make_audio_init, make_video_init
+
+
+def _fake_init_bytes(bucket_name, object_key):
+    """Stand-in for MinIO init-segment reads during codec probing."""
+    if object_key.endswith("audio/init.mp4"):
+        return make_audio_init()
+    return make_video_init()
+
+
+@pytest.fixture(autouse=True)
+def _patch_codec_probe():
+    """Prevent process_manifest_task from hitting MinIO for @codecs probes."""
+    with patch(
+        "app.tasks.process_manifest_task.get_object_bytes",
+        side_effect=_fake_init_bytes,
+    ):
+        yield
 
 
 def _make_manifest_task(
@@ -110,6 +128,9 @@ class TestProcessManifestTask:
         call_kwargs = mock_gen_cls.call_args.kwargs
         assert call_kwargs["video_id"] == "vid1"
         assert call_kwargs["framerate"] == 30
+        assert call_kwargs["renditions"]["720p"]["codecs"] == "avc1.640028"
+        assert call_kwargs["audio_codecs"] == "mp4a.40.2"
+        assert "codecs" not in task.task_metadata["renditions"]["720p"]
         mock_gen.generate_manifest.assert_called_once()
         mock_upload.assert_called_once()
         assert task.status == ManifestStatus.COMPLETED.value
@@ -403,7 +424,7 @@ class TestProcessFailedManifestTasks:
         assert result == {"processed": 0}
         session.close.assert_called_once()
 
-    @patch("app.tasks.process_failed_manifest_tasks.cleanup_manifest")
+    @patch("app.tasks.process_failed_manifest_tasks.cleanup_local_manifest_dir")
     @patch("app.tasks.process_failed_manifest_tasks.release_lock")
     @patch("app.tasks.process_failed_manifest_tasks.acquire_lock")
     @patch("app.tasks.process_failed_manifest_tasks.get_sync_session")
@@ -427,12 +448,13 @@ class TestProcessFailedManifestTasks:
         assert added.payload["origin_service"] == "manifest_service"
         assert added.payload["manifest_id"] == task.id
         assert added.payload["video_id"] == "vid1"
+        assert added.manifest_id == task.id
         session.commit.assert_called()
         session.close.assert_called_once()
         assert mock_acquire.call_count == 2
         assert mock_release.call_count == 2
 
-    @patch("app.tasks.process_failed_manifest_tasks.cleanup_manifest")
+    @patch("app.tasks.process_failed_manifest_tasks.cleanup_local_manifest_dir")
     @patch("app.tasks.process_failed_manifest_tasks.release_lock")
     @patch("app.tasks.process_failed_manifest_tasks.acquire_lock")
     @patch("app.tasks.process_failed_manifest_tasks.get_sync_session")
@@ -451,7 +473,7 @@ class TestProcessFailedManifestTasks:
         session.add.assert_not_called()
         session.close.assert_called_once()
 
-    @patch("app.tasks.process_failed_manifest_tasks.cleanup_manifest")
+    @patch("app.tasks.process_failed_manifest_tasks.cleanup_local_manifest_dir")
     @patch("app.tasks.process_failed_manifest_tasks.release_lock")
     @patch("app.tasks.process_failed_manifest_tasks.acquire_lock")
     @patch("app.tasks.process_failed_manifest_tasks.get_sync_session")
@@ -472,7 +494,7 @@ class TestProcessFailedManifestTasks:
         mock_release.assert_called_once_with(processing_lock)
         session.close.assert_called_once()
 
-    @patch("app.tasks.process_failed_manifest_tasks.cleanup_manifest")
+    @patch("app.tasks.process_failed_manifest_tasks.cleanup_local_manifest_dir")
     @patch("app.tasks.process_failed_manifest_tasks.release_lock")
     @patch("app.tasks.process_failed_manifest_tasks.acquire_lock")
     @patch("app.tasks.process_failed_manifest_tasks.get_sync_session")
@@ -509,7 +531,7 @@ class TestProcessCompletedManifestTask:
         assert result == {"processed": 0}
         session.close.assert_called_once()
 
-    @patch("app.tasks.process_completed_manifest_task.cleanup_manifest")
+    @patch("app.tasks.process_completed_manifest_task.cleanup_local_manifest_dir")
     @patch("app.tasks.process_completed_manifest_task.release_lock")
     @patch("app.tasks.process_completed_manifest_task.acquire_lock")
     @patch("app.tasks.process_completed_manifest_task.get_sync_session")
@@ -538,12 +560,13 @@ class TestProcessCompletedManifestTask:
         assert added.payload["video_id"] == "vid1"
         assert added.payload["manifest_id"] == task.id
         assert added.payload["manifest_url"] == "http://minio:9000/manifest/vid1/manifest_abc.mpd"
+        assert added.manifest_id == task.id
         session.commit.assert_called()
         session.close.assert_called_once()
         assert mock_acquire.call_count == 2
         assert mock_release.call_count == 2
 
-    @patch("app.tasks.process_completed_manifest_task.cleanup_manifest")
+    @patch("app.tasks.process_completed_manifest_task.cleanup_local_manifest_dir")
     @patch("app.tasks.process_completed_manifest_task.release_lock")
     @patch("app.tasks.process_completed_manifest_task.acquire_lock")
     @patch("app.tasks.process_completed_manifest_task.get_sync_session")
@@ -562,7 +585,7 @@ class TestProcessCompletedManifestTask:
         session.add.assert_not_called()
         session.close.assert_called_once()
 
-    @patch("app.tasks.process_completed_manifest_task.cleanup_manifest")
+    @patch("app.tasks.process_completed_manifest_task.cleanup_local_manifest_dir")
     @patch("app.tasks.process_completed_manifest_task.release_lock")
     @patch("app.tasks.process_completed_manifest_task.acquire_lock")
     @patch("app.tasks.process_completed_manifest_task.get_sync_session")
@@ -583,7 +606,7 @@ class TestProcessCompletedManifestTask:
         mock_release.assert_called_once_with(processing_lock)
         session.close.assert_called_once()
 
-    @patch("app.tasks.process_completed_manifest_task.cleanup_manifest")
+    @patch("app.tasks.process_completed_manifest_task.cleanup_local_manifest_dir")
     @patch("app.tasks.process_completed_manifest_task.release_lock")
     @patch("app.tasks.process_completed_manifest_task.acquire_lock")
     @patch("app.tasks.process_completed_manifest_task.get_sync_session")

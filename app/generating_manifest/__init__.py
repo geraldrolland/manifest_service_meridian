@@ -30,6 +30,8 @@ class GenerateManifest:
         segment_prefix: str,
         video_duration: float,
         framerate: float,
+        has_audio: bool = True,
+        audio_codecs: str | None = "mp4a.40.2",
     ):
         """Args:
             video_id: Video identifier.
@@ -37,10 +39,13 @@ class GenerateManifest:
                 e.g. "vidsegments/{video_id}/".
             output_dir: Base output directory, e.g. "/tmp/manifest".
             segment_duration: Segment length in seconds.
-            renditions: Mapping of rendition name -> {width, height, bitrate}.
+            renditions: Mapping of rendition name ->
+                {width, height, bitrate[, codecs]}.
             segment_prefix: Segment filename prefix, e.g. "seg_".
             video_duration: Total video duration in seconds.
             framerate: Frame rate in FPS (adds frameRate attribute).
+            audio_codecs: RFC 6381 codec string for the audio
+                Representation, e.g. "mp4a.40.2". None omits the attribute.
         """
         self.video_id = video_id
         self.media_prefix = media_prefix
@@ -50,6 +55,8 @@ class GenerateManifest:
         self.segment_prefix = segment_prefix
         self.video_duration = video_duration
         self.framerate = framerate
+        self.has_audio = has_audio
+        self.audio_codecs = audio_codecs
 
     def generate_manifest(self) -> str:
         """Generate a static DASH manifest and write it to the output dir.
@@ -152,37 +159,43 @@ class GenerateManifest:
         video_set = ET.SubElement(period, "AdaptationSet", video_attrs)
 
         for name, props in self.renditions.items():
+            representation_attrs = {
+                "id": name,
+                "width": str(props["width"]),
+                "height": str(props["height"]),
+                "bandwidth": str(self.__parse_bandwidth(props["bitrate"])),
+            }
+            if props.get("codecs"):
+                representation_attrs["codecs"] = str(props["codecs"])
             representation = ET.SubElement(
                 video_set,
                 "Representation",
-                {
-                    "id": name,
-                    "width": str(props["width"]),
-                    "height": str(props["height"]),
-                    "bandwidth": str(self.__parse_bandwidth(props["bitrate"])),
-                },
+                representation_attrs,
             )
             representation.append(self.__segment_template())
 
-        # --- Audio AdaptationSet (always included) ---
-        audio_set = ET.SubElement(
-            period,
-            "AdaptationSet",
-            {
-                "contentType": "audio",
-                "mimeType": "audio/mp4",
-                "segmentAlignment": self.SEGMENT_ALIGNMENT,
-                "startWithSAP": "1",
-            },
-        )
-        audio_representation = ET.SubElement(
-            audio_set,
-            "Representation",
-            {
+        if self.has_audio:
+            audio_set = ET.SubElement(
+                period,
+                "AdaptationSet",
+                {
+                    "contentType": "audio",
+                    "mimeType": "audio/mp4",
+                    "segmentAlignment": self.SEGMENT_ALIGNMENT,
+                    "startWithSAP": "1",
+                },
+            )
+            audio_representation_attrs = {
                 "id": "audio",
                 "bandwidth": str(self.AUDIO_BANDWIDTH),
-            },
-        )
-        audio_representation.append(self.__segment_template())
+            }
+            if self.audio_codecs:
+                audio_representation_attrs["codecs"] = str(self.audio_codecs)
+            audio_representation = ET.SubElement(
+                audio_set,
+                "Representation",
+                audio_representation_attrs,
+            )
+            audio_representation.append(self.__segment_template())
 
         return mpd

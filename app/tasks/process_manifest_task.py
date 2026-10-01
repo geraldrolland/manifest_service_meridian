@@ -4,10 +4,11 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from app.celery_app import celery_app
+from app.codecs import codec_from_init
 from app.db_config import get_sync_session
 from app.generating_manifest import GenerateManifest
 from app.lock import acquire_lock, release_lock, LockState
-from app.minio_client import upload_object
+from app.minio_client import get_object_bytes, upload_object
 from app.models.manifest_task import ManifestTask, ManifestStatus
 from app.utils import build_object_url, resolve_object_key
 
@@ -16,6 +17,54 @@ logger = logging.getLogger(__name__)
 MANIFEST_DIR = "/tmp/manifest"
 MANIFEST_BUCKET = "manifest"
 GEN_MANIFEST_MAX_RETRIES = 5
+
+
+def _split_media_prefix(media_prefix: str) -> tuple[str, str]:
+    """Split "bucket/key/prefix/" into ("bucket", "key/prefix/")."""
+    parts = media_prefix.strip("/").split("/", 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError(f"invalid media_prefix: {media_prefix!r}")
+    return parts[0], f"{parts[1].rstrip('/')}/"
+
+
+def _resolve_codecs(md: dict) -> tuple[dict, str | None]:
+    """Resolve @codecs values for every rendition (and audio).
+
+    Probes each rendition's init.mp4 in MinIO and parses the codec string
+    from its avcC/esds box. Skips probing when manifest_metadata already
+    carries codec strings for every rendition.
+
+    Args:
+        md: manifest_metadata for the task.
+
+    Returns:
+        Tuple of (renditions with "codecs" filled in, audio codec string).
+
+    Raises:
+        CodecError / S3Error: propagated so the task retries, then fails
+            rather than publishing a manifest players cannot decode.
+    """
+    renditions = {
+        name: dict(props) for name, props in (md.get("renditions") or {}).items()
+    }
+    if not renditions:
+        raise ValueError("manifest_metadata has no renditions")
+
+    if not all(props.get("codecs") for props in renditions.values()):
+        bucket, key_prefix = _split_media_prefix(md["media_prefix"])
+        for name in renditions:
+            init_bytes = get_object_bytes(bucket, f"{key_prefix}{name}/init.mp4")
+            renditions[name]["codecs"] = codec_from_init(init_bytes, kind="video")
+            logger.debug("Probed codec for %s: %s", name, renditions[name]["codecs"])
+
+    audio_codecs = md.get("audio_codecs")
+    if md.get("has_audio", True) and not audio_codecs:
+        bucket, key_prefix = _split_media_prefix(md["media_prefix"])
+        audio_bytes = get_object_bytes(bucket, f"{key_prefix}audio/init.mp4")
+        audio_codecs = codec_from_init(audio_bytes, kind="audio")
+        logger.debug("Probed audio codec: %s", audio_codecs)
+
+    return renditions, audio_codecs
 
 
 @celery_app.task(
@@ -34,14 +83,15 @@ def process_manifest_task():
 
     For each task:
     1. Acquire PROCESSING lock
-    2. Generate DASH manifest via GenerateManifest (output to MANIFEST_DIR)
-    3. Resolve object key and upload to MANIFEST_BUCKET
-    4. Acquire COMMITTING lock
-    5. Set status=COMPLETED and manifest_url (published stays False)
-    6. Commit atomically
-    7. On exception: rollback, increment num_of_retries, set retry_after
+    2. Resolve @codecs by probing each rendition's init.mp4 in MinIO
+    3. Generate DASH manifest via GenerateManifest (output to MANIFEST_DIR)
+    4. Resolve object key and upload to MANIFEST_BUCKET
+    5. Acquire COMMITTING lock
+    6. Set status=COMPLETED and manifest_url (published stays False)
+    7. Commit atomically
+    8. On exception: rollback, increment num_of_retries, set retry_after
        or FAILED when max retries reached
-    8. Release locks
+    9. Release locks
     """
     session = get_sync_session()
     try:
@@ -73,15 +123,18 @@ def process_manifest_task():
                     continue
 
                 md = task.task_metadata or {}
+                renditions, audio_codecs = _resolve_codecs(md)
                 generator = GenerateManifest(
                     video_id=task.video_id,
                     media_prefix=md["media_prefix"],
                     output_dir=MANIFEST_DIR,
                     segment_duration=md["segment_duration"],
-                    renditions=md["renditions"],
+                    renditions=renditions,
                     segment_prefix=md["segment_filename_prefix"],
                     video_duration=md["video_duration"],
                     framerate=md["framerate"],
+                    has_audio=md.get("has_audio", True),
+                    audio_codecs=audio_codecs,
                 )
                 mpd_path = generator.generate_manifest()
 
@@ -109,6 +162,9 @@ def process_manifest_task():
 
             except Exception:
                 session.rollback()
+                logger.exception(
+                    "Error processing manifest task %s", task.id
+                )
                 try:
                     failed_task = session.get(ManifestTask, task.id)
                     if failed_task:

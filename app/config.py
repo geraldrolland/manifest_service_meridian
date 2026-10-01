@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     Attributes:
         kafka_bootstrap_servers: Comma-separated Kafka broker addresses.
         kafka_topic: Topic for job completed events.
+        kafka_video_deleted_topic: Topic for video deleted events (cleanup).
         kafka_consumer_group_id: Consumer group ID for the Kafka consumer.
         kafka_auto_offset_reset: Where to start reading when no committed offset exists.
         database_url: SQLAlchemy async database connection string.
@@ -30,8 +31,10 @@ class Settings(BaseSettings):
 
     kafka_bootstrap_servers: str = "kafka:29092"
     kafka_topic: str = "job.completed"
+    kafka_video_deleted_topic: str = "video.deleted"
     kafka_consumer_group_id: str = "meridian-manifest-consumer-group"
     kafka_auto_offset_reset: str = "earliest"
+    kafka_publish_timeout: int = 30
     database_url: str = "postgresql+asyncpg://postgres:postgres@manifest-db:5432/manifest_db"
     redis_host: str = "redis"
     redis_port: int = 6379

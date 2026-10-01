@@ -105,10 +105,15 @@ class TestImports:
         assert OutboxStatus.PENDING.value == "PENDING"
 
     def test_utils_importable(self):
-        from app.utils import build_object_url, resolve_object_key, cleanup_manifest
+        from app.utils import build_object_url, resolve_object_key, cleanup_local_manifest_dir
 
         assert callable(build_object_url)
         assert callable(resolve_object_key)
+        assert callable(cleanup_local_manifest_dir)
+
+    def test_cleanup_importable(self):
+        from app.cleanup import cleanup_manifest
+
         assert callable(cleanup_manifest)
 
     def test_generate_manifest_importable(self):

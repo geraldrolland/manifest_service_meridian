@@ -7,7 +7,7 @@ from app.db_config import get_sync_session
 from app.lock import acquire_lock, release_lock, LockState
 from app.models.manifest_task import ManifestTask, ManifestStatus
 from app.models.outbox import Outbox
-from app.utils import cleanup_manifest
+from app.utils import cleanup_local_manifest_dir
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ def process_failed_manifest_tasks():
 
     Flow per task:
         1. Acquire PROCESSING lock
-        2. cleanup_manifest(video_id): delete /tmp/manifest/{video_id} if present
+        2. cleanup_local_manifest_dir(video_id): delete /tmp/manifest/{video_id} if present
         3. Acquire COMMITTING lock
         4. Create Outbox event (topic=manifest.failed, payload={origin_service, manifest_id, video_id})
         5. Set task.published = True
@@ -63,7 +63,7 @@ def process_failed_manifest_tasks():
                     logger.debug("PROCESSING lock held for %s, skipping", task.id)
                     continue
 
-                cleanup_manifest(task.video_id)
+                cleanup_local_manifest_dir(task.video_id)
 
                 committing_lock = acquire_lock(LockState.COMMITTING, task.id)
                 if committing_lock is None:
@@ -85,6 +85,7 @@ def process_failed_manifest_tasks():
                         "manifest_id": task.id,
                         "video_id": task.video_id,
                     },
+                    manifest_id=task.id,
                 )
                 session.add(outbox)
 

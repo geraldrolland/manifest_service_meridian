@@ -95,6 +95,90 @@ class TestGenerateManifest:
         assert audio_reps[0].get("id") == "audio"
         assert audio_reps[0].get("bandwidth") == "128000"
 
+    def test_audio_adaptation_set_omitted_for_video_only_source(self, tmp_path):
+        gen = _make_generator(tmp_path, has_audio=False)
+        path = gen.generate_manifest()
+        root = _parse(path)
+
+        audio_sets = [
+            e for e in root.iter()
+            if _local(e.tag) == "AdaptationSet" and e.get("contentType") == "audio"
+        ]
+        video_sets = [
+            e for e in root.iter()
+            if _local(e.tag) == "AdaptationSet" and e.get("contentType") == "video"
+        ]
+        assert audio_sets == []
+        assert len(video_sets) == 1
+
+    def test_video_codecs_attribute(self, tmp_path):
+        gen = _make_generator(
+            tmp_path,
+            renditions={
+                "720p": {
+                    "width": 1280,
+                    "height": 720,
+                    "bitrate": "800k",
+                    "codecs": "avc1.64001f",
+                },
+            },
+        )
+        path = gen.generate_manifest()
+        root = _parse(path)
+        rep = next(
+            e for e in root.iter()
+            if _local(e.tag) == "Representation" and e.get("id") == "720p"
+        )
+        assert rep.get("codecs") == "avc1.64001f"
+
+    def test_video_codecs_omitted_when_absent(self, tmp_path):
+        gen = _make_generator(tmp_path)
+        path = gen.generate_manifest()
+        root = _parse(path)
+        reps = [e for e in root.iter() if _local(e.tag) == "Representation"]
+        assert reps
+        assert all(rep.get("codecs") is None for rep in reps if rep.get("id") != "audio")
+
+    def test_audio_codecs_defaults_to_aac_lc(self, tmp_path):
+        gen = _make_generator(tmp_path)
+        path = gen.generate_manifest()
+        root = _parse(path)
+        audio_rep = next(
+            e for e in root.iter()
+            if _local(e.tag) == "Representation" and e.get("id") == "audio"
+        )
+        assert audio_rep.get("codecs") == "mp4a.40.2"
+
+    def test_audio_codecs_override(self, tmp_path):
+        gen = _make_generator(tmp_path, audio_codecs="mp4a.40.5")
+        path = gen.generate_manifest()
+        root = _parse(path)
+        audio_rep = next(
+            e for e in root.iter()
+            if _local(e.tag) == "Representation" and e.get("id") == "audio"
+        )
+        assert audio_rep.get("codecs") == "mp4a.40.5"
+
+    def test_audio_codecs_omitted_when_none(self, tmp_path):
+        gen = _make_generator(tmp_path, audio_codecs=None)
+        path = gen.generate_manifest()
+        root = _parse(path)
+        audio_rep = next(
+            e for e in root.iter()
+            if _local(e.tag) == "Representation" and e.get("id") == "audio"
+        )
+        assert audio_rep.get("codecs") is None
+
+    def test_video_codecs_omitted_when_video_only_source(self, tmp_path):
+        gen = _make_generator(tmp_path, has_audio=False)
+        path = gen.generate_manifest()
+        root = _parse(path)
+        reps = [
+            e for e in root.iter()
+            if _local(e.tag) == "Representation" and e.get("contentType") != "audio"
+        ]
+        assert all(rep.get("codecs") is None for rep in reps)
+
     def test_segment_template_values(self, tmp_path):
         gen = _make_generator(tmp_path, segment_duration=4, media_prefix="vidsegments/vid1/")
         path = gen.generate_manifest()

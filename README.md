@@ -64,6 +64,15 @@ job.completed event (media_processing_service)
 
 Downstream, the Video Service `manifest.completed` consumer sets `videos.status = COMPLETED` and `videos.manifest_url`, then clients can fetch the MPD and segments for playback.
 
+### Audio codec from `init.mp4` (`app/codecs.py`)
+
+`audio_codec_from_init` walks the `esds` box to recover the decoder config (e.g. `mp4a.40.2`) so the MPD's audio AdaptationSet advertises the codec actually used.
+
+`esds` is a **FullBox**: the descriptor table starts after a 4-byte version/flags prefix. Without skipping it, the `0x00` version byte is misread as the descriptor tag and parsing fails with
+`CodecError: expected ES_Descriptor tag 0x03, got 0x00`, which aborts manifest generation. The skip is covered by `test_skips_fullbox_version_and_flags` in `tests/test_codecs.py`.
+
+`process_manifest_task` also logs the full traceback on failure (`logger.exception`) instead of swallowing the exception silently.
+
 ## Celery Beat Schedule
 
 | Task | Schedule | Description |
@@ -78,9 +87,29 @@ Downstream, the Video Service `manifest.completed` consumer sets `videos.status 
 | Topic | Role | Purpose |
 |-------|------|---------|
 | `job.completed` | Consume | Media processing finished; triggers manifest task |
+| `video.deleted` | Consume | Video deleted — purge MPD objects + manifest rows |
 | `manifest.generating` | Produce (via outbox) | Manifest generation started |
 | `manifest.completed` | Produce (via outbox) | Manifest ready; Video Service sets COMPLETED + `manifest_url` |
 | `manifest.failed` | Produce (via outbox) | Terminal manifest failure |
+
+### `video.deleted` cleanup
+
+When video_service deletes a video it commits a `video.deleted` event
+(`{"video_id": "uuid"}`) in the same transaction. The consumer fetches every
+`manifest_tasks` row for that video and runs `cleanup_manifest(db, manifests)`:
+deletes each `.mpd` object from the manifest bucket (absent objects are
+tolerated), deletes the rows, and commits once. The outbox `manifest_id`
+foreign key (`ON DELETE CASCADE`) removes any unpublished events for those
+manifests; the local `/tmp/manifest/{video_id}` directory is removed too.
+
+> **Existing databases:**
+>
+> ```sql
+> ALTER TABLE outbox ADD COLUMN IF NOT EXISTS manifest_id VARCHAR(256);
+> ALTER TABLE outbox DROP CONSTRAINT IF EXISTS outbox_manifest_id_fkey;
+> ALTER TABLE outbox ADD CONSTRAINT outbox_manifest_id_fkey
+>   FOREIGN KEY (manifest_id) REFERENCES manifest_tasks(id) ON DELETE CASCADE;
+> ```
 
 ## Database Schema
 
@@ -107,6 +136,7 @@ Downstream, the Video Service `manifest.completed` consumer sets `videos.status 
 | `topic` | VARCHAR(255) | Kafka topic |
 | `payload` | JSON | Event payload |
 | `status` | VARCHAR(32) | PENDING → PROCESSED / FAILED |
+| `manifest_id` | VARCHAR(256) FK | Source manifest (`ON DELETE CASCADE`) |
 | `retry_count` | INT | Publish retry counter |
 
 ## Distributed Locking
@@ -151,6 +181,7 @@ Settings load from environment variables / `.env` via `pydantic-settings`.
 |----------|---------|-------------|
 | `KAFKA_BOOTSTRAP_SERVERS` | `kafka:29092` | Kafka brokers |
 | `KAFKA_TOPIC` | `job.completed` | Incoming topic |
+| `KAFKA_VIDEO_DELETED_TOPIC` | `video.deleted` | Incoming topic (deletion cleanup) |
 | `KAFKA_CONSUMER_GROUP_ID` | `meridian-manifest-consumer-group` | Consumer group |
 | `DATABASE_URL` | `postgresql+asyncpg://...manifest_db` | PostgreSQL DSN |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB` | `redis` / `6379` / `4` | Distributed locks |
@@ -241,10 +272,14 @@ python -m pytest tests/ -v
 | `test_tasks.py` | Manifest generation, outbox publish, failed/completed publishers, locks, retries |
 | `test_consumer.py` | Kafka consumer persistence + outbox events |
 | `test_generating_manifest.py` | DASH MPD XML structure |
+| `test_codecs.py` | `init.mp4` codec parsing (esds FullBox skip, CTA-608, codec strings) |
+| `test_cleanup.py` | Manifest / segment cleanup helpers |
+| `test_outbox_model.py` | Outbox row lifecycle + status transitions |
+| `helpers.py` | Shared fixtures (`make_audio_init`, `make_video_init`) |
 | `test_utils.py` | Object URL/key helpers, temp cleanup |
 | `test_smoke.py` | Imports and router wiring |
 
-Latest local run: **86 passed**.
+Latest local run: **121 passed**.
 
 ## License
 

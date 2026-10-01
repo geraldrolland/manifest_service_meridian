@@ -34,6 +34,7 @@ class KafkaProducer:
             return
         self._producer = SyncKafkaProducer(
             bootstrap_servers=settings.kafka_bootstrap_servers,
+            api_version=(2, 6),
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
             acks="all",
         )
@@ -52,13 +53,14 @@ class KafkaProducer:
 
         Injects event_id and UTC timestamp into the payload before sending.
         Auto-initializes the producer if not already initialized.
-        Raises NoBrokersAvailable if the broker is offline.
+        Raises on produce failure so callers (outbox publisher) can retry.
         """
         if self._producer is None:
             self.initialize()
         payload["event_id"] = uuid.uuid4().hex
         payload["timestamp"] = datetime.now(timezone.utc).isoformat()
-        self._producer.send(topic, payload)
+        future = self._producer.send(topic, payload)
+        future.get(timeout=settings.kafka_publish_timeout)
         self._producer.flush()
         logger.info("Published event to topic=%s", topic)
 

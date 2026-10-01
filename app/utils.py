@@ -47,7 +47,7 @@ def resolve_object_key(file_path: str, prefix: str) -> str:
     return key
 
 
-def cleanup_manifest(video_id: str) -> None:
+def cleanup_local_manifest_dir(video_id: str) -> None:
     """Delete the local manifest output directory for a video if it exists.
 
     Args:
